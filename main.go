@@ -5,26 +5,30 @@ import (
 	"gopkg.in/yaml.v3"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-var wg sync.WaitGroup
-
 func main() {
+	var wg sync.WaitGroup
 
-	var fileNames []string
+	directoryPath := os.Args[1:]
 
-	// RUN_MODE can be either "generate" or "cli"
-	if os.Getenv("RUN_MODE") == "generate" {
-		fileNames = getGeneratedFileList()
-	} else {
-		fileNames = os.Args[1:]
+	if len(directoryPath) < 1 {
+		log.Println("Please provide a path of where the files are located")
+		os.Exit(1)
 	}
 
-	if len(fileNames) < 1 {
-		log.Println("Please provide a schema file")
+	fileList, err := findFilesInPath(directoryPath[0], "*.template.yaml")
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	if len(fileList) == 0 {
+		log.Println("No files found")
 		os.Exit(1)
 	}
 
@@ -45,52 +49,60 @@ func main() {
 		log.Println(err)
 		os.Exit(1)
 	}
-	// Starting wait group
-	wg.Add(1)
-	validateSchema(jsonSchema, fileNames)
-	// Waiting for all go routines to finish
-	wg.Wait()
-}
-
-func validateSchema(schema *jsonschema.Schema, files []string) {
-
 	start := time.Now()
-	// Closing wait group once all go routines are finished
-	defer wg.Done()
-	for index, file := range files {
-		log.Println("Validating file", index+1, "of", len(files))
-		content, err := os.ReadFile(file)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-		var data interface{}
-		if err := yaml.Unmarshal(content, &data); err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-		if err := schema.Validate(data); err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-		log.Println("File", index+1, "of", len(files), "is valid")
+	for _, file := range fileList {
+		wg.Add(1)
+		file := file
+		go validate(file, jsonSchema, &wg)
+
 	}
-	log.Println("All files are valid")
+	wg.Wait()
 	duration := time.Since(start)
-	log.Println("Total time taken to validate files:", duration.Seconds(), "seconds")
-	os.Exit(0)
+	log.Println("Total time taken to validate", len(fileList), "files:", duration.Seconds(), "seconds")
 }
 
-func getGeneratedFileList() []string {
-	filePath := "./files/generated/"
-	var fileList []string
-	files, err := os.ReadDir(filePath)
+// validate validates a yaml file against a json schema
+func validate(file string, jsonSchema *jsonschema.Schema, wg *sync.WaitGroup) {
+	defer wg.Done()
+	log.Println("Validating file", file)
+	content, err := os.ReadFile(file)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
 	}
-	for _, file := range files {
-		fileList = append(fileList, filePath+file.Name())
+	var data interface{}
+	if err := yaml.Unmarshal(content, &data); err != nil {
+		log.Println(err)
+		os.Exit(1)
 	}
-	return fileList
+	if err := jsonSchema.Validate(data); err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
 }
+
+// findFilesInPath finds all files in a path that match a pattern
+func findFilesInPath(path string, pattern string) ([]string, error) {
+	var matches []string
+	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if matched, err := filepath.Match(pattern, filepath.Base(path)); err != nil {
+			return err
+		} else if matched {
+			matches = append(matches, "./"+path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
+//The above code is a simple example of how to use the jsonschema package to validate a yaml file against a json schema.
+//The code is not optimized for performance and is just a simple example.
